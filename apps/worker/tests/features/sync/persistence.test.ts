@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createTestD1 } from "../../../../../packages/db/testing/d1";
+import { createTestD1 } from "../../helpers/d1";
 import {
   persistStagedSyncWrite,
   promoteStagedSyncWrite,
@@ -9,7 +9,7 @@ import {
 import {
   connectorStateStatement,
   updateConnectorEncryptedConfigIfCurrent,
-} from "../../../src/features/sync/repository";
+} from "../../../src/features/sync/connector-repository";
 
 const now = "2026-09-01T10:30:00+08:00";
 const account: SyncWriteRecord = {
