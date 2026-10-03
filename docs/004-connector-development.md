@@ -29,7 +29,7 @@ Connector 採三層 registry：
 | `browser_session`         | Browser 只負責登入，後續使用可復用的 HTTP session        | 玉山                             |
 | `browser_captcha_session` | Browser 登入含 CAPTCHA，可由 AI 或人工完成並復用 session | 永豐、台新、華南、第一銀行、凱基 |
 
-不要為單一銀行建立新的通用框架。只有登入生命週期真的不同時才新增 mode，並同時補上 catalog 說明及共同測試。
+不要為單一銀行建立新的通用框架。只有登入生命週期真的不同時才新增 mode，並同時補上 catalog 說明；新增核心風險時才擴充共同測試。
 
 ## 設定與狀態分級
 
@@ -115,11 +115,11 @@ session 忙碌，原有專屬 API 錯誤碼仍供這些情境使用。session �
 
 ## 無信用卡情境
 
-- 沒有信用卡是正常的產品資格狀態。同時支援存款的 connector 繼續回傳存款；僅支援信用卡的永豐與台新回傳空的金融資料，手動與排程都正常完成同步並更新 cursor。
+- 沒有信用卡是正常的產品資格狀態。同時支援存款的 connector 繼續回傳存款；僅支援信用卡的台新回傳空的金融資料，手動與排程都正常完成同步並更新 cursor。
 - 只有明確持卡旗標、可確認無卡的完整清單或無卡提示才能略過信用卡流程。沒有帳單／消費、缺少清單、HTTP 失敗、session 失效與未知錯誤，不得直接當成無卡；既有可選資料的降級規則維持原行為。
 - `packages/connectors/src/credit-card-status.ts` 的 `isNoCreditCardMessage` 只辨識以無卡敘述開頭的訊息，排除條件式申請說明；可移除銀行原生 alert 的四位數代碼前綴，但不依該代碼判定無卡。各銀行只能在信用卡階段與對應端點套用，不在共用 service 吞掉錯誤。
 - 無卡時信用卡帳戶、餘額、交易與帳單為空，不建立零餘額，不刪除先前的金融歷史資料。第一銀行、台新的 `hasCreditCard: false` 是本次擷取結果，並非使用者設定或需要持久化的產品偏好。
-- 無卡文案分支使用去識別的合成 fixture 驗證；目前新增的第一銀行、中信與台新分支尚未以真實無卡帳號驗證，不將合成錯誤代碼視為銀行正式代碼。
+- 無卡文案分支使用去識別的合成 fixture 驗證；目前新增的中信與台新分支尚未以真實無卡帳號驗證（第一銀行的會員登出頁分支已以真實無卡帳號確認），不將合成錯誤代碼視為銀行正式代碼。
 
 ## 路由、排程與 challenge
 
@@ -131,21 +131,16 @@ session 忙碌，原有專屬 API 錯誤碼仍供這些情境使用。session �
 - 若外部服務支援接管其他登入中的裝置，必須明確定義手動與排程的 `force` policy，並在介面與使用文件提示可能中斷使用者目前的工作階段。
 - 新 connector 必須透過 D1 migration 建立 `<connectorId>:all` sync job，預設停用。
 
-## 測試最低要求
+## 核心驗證
 
-每個 connector 至少需要：
+不再要求每個 connector 各自建立 config、parser、session、route、scheduler 與 self-check 全套測試。依後端文件的四類核心保障，只針對本次新增的風險擴充既有案例：
 
-1. Config schema 正常與錯誤案例。
-2. 外部 response fixture parser 測試。
-3. Stable `sourceId` 與重複同步去重測試。
-4. 金額方向、日期與 pending／posted lifecycle 測試。
-5. Session 復用、失效、credential change cleanup 測試。
-6. OTP／CAPTCHA／rate limit 等 typed error 測試（適用時）。
-7. Route manual sync 與 scheduler dispatch 測試。
-8. Cursor 不含 secret、encrypted config 不含 public field 的 state boundary 測試。
-9. Synthetic self-check，並接入 `test:selfcheck` 或正式 test command。
+- 金額、繳款狀態與交易方向：先以銀行實際畫面或已確認欄位語意建立預期，再保存去識別化 response fixture。可替換帳號與金額，但不可從 parser 的輸出倒推預期；合成 fixture 本身不能證明銀行欄位語意。
+- 同步去重、入帳與使用者決定：以共用 persistence 的隔離 D1 測試確認最後資料，不重複模擬每家銀行的相同寫入流程。
+- 憑證安全：驗證公開設定／cursor 不含秘密、帳密變更清除舊 session，以及舊同步不能覆蓋新設定。
+- 使用者驗證流程：以少量 E2E 代表案例確認，不窮舉銀行 DOM、frame、事件順序或同類錯誤碼。
 
-`apps/worker/tests/features/sync/registry.test.ts` 會檢查 catalog、config schema 與 Worker runtime 是否完整；不得以 type assertion 或 fallback entry 規避。
+自動測試統一接入正式 test command，不另維護 self-check 腳本。Catalog、config schema 與 runtime 的註冊完整性由既有型別契約與實作審查確認，不以 type assertion 或 fallback entry 規避。
 
 ## 新增流程
 
@@ -157,17 +152,18 @@ session 忙碌，原有專屬 API 錯誤碼仍供這些情境使用。session �
 5. 在 Worker runtime registry 註冊 sync／challenge handler。
 6. 在前端新增受 `ConnectorFormFieldKey` 約束的表單欄位與必要 challenge UI。
 7. 新增 sync job migration。
-8. 完成上述最低測試並更新 `README.md` 支援資料來源表。
+8. 依上述核心風險完成必要驗證，並更新 `README.md` 支援資料來源表。
 9. 執行：
 
 ```bash
+npm run format:check
 npm run typecheck
 npm run test:backend
 npm run verify:web
 npm run build
 ```
 
-若新增的是全新資料 entity，還必須同步更新 core contract、D1 migration、`SyncEntityType`、promotion order、entity config、record mapper 與 persistence test。
+若新增的是全新資料 entity，還必須同步更新 core contract、D1 migration、`SyncEntityType`、promotion order、entity config 與 record mapper；涉及資料完整性的新風險時擴充 persistence test。
 
 ## 各來源特殊行為
 
@@ -257,19 +253,35 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 
 ### 永豐銀行
 
-信用卡總覽或近期帳單明確回覆無卡時，略過信用卡 SSO 與後續請求；仍保留 `LatestTx` 的「您沒有有效卡」處理。兩者皆回傳空結果，不建立信用卡帳戶。`查無消費紀錄` 只表示沒有消費，仍繼續原信用卡流程；SSO／授權失敗不當成無卡。
+使用一般行動網銀登入頁 `/m/member/login/m_login.aspx`，同一 App session 先取得存款，再取得信用卡資料。信用卡總覽或近期帳單明確回覆無卡時，略過信用卡 SSO 與後續請求；仍保留 `LatestTx` 的「您沒有有效卡」處理。這些情境不建立信用卡帳戶，但保留存款帳戶、餘額與交易。`查無消費紀錄` 只表示沒有消費，仍繼續原信用卡流程；SSO／授權失敗不當成無卡，存款端點不套用無卡規則。
+
+#### 臺外幣活存
+
+- 純查詢與解析邏輯位於 `packages/connectors/src/sinopac-deposits.ts`，Worker adapter 沿用 App JSON transport 與加密 session，不保存新的帳密或 session 欄位。
+- 以 POST `/ws/bank/bankbal/ws_bankbal.ashx` 的 `SubInfo` 取得各帳戶與幣別；`AvailBalInt` 為活存餘額、`MaxAvail` 為可用餘額。零餘額仍建立帳戶與快照，`FixBalance` 的綜存定存不納入本次活存範圍。
+- 每個帳戶依序 POST `/ws/bank/transdetail/ws_transdetailMerge.ashx`，form 欄位為 `AcctValue`、`Curr`、`QueryType=3`、`StartDate`、`EndDate`。日期格式為 `YYYYMMDD`，依臺灣當日回溯 `BANK_SYNC_MONTHS`（三個月），月底取目標月份最後一天。
+- `DataText4` 保留銀行提供的金額正負號。`DataText1` 為交易日期／時間，僅有日期時不補午夜；`DataText2` 是計息日，只存於白名單 raw，不用作入帳日。HTML 先去除再正規化，摘要與備註中的完整帳號／身分證字號須遮罩。
+- `RecordCount` 是最後一筆的 index，非總筆數；有交易時應等於 `SubInfo.length - 1`。筆數不符時切成不重疊的日期區間重查；單日仍不完整就失敗，不提交部分結果。僅交易端點的 `Header=FAIL`、`Message=查無資料` 且 `SubInfo=[]` 可作為明確無交易回應；缺少必要清單、session 失效與未知錯誤仍失敗。
+- 帳戶 sourceId 使用末四碼、完整帳號 SHA-256 與幣別，不儲存完整帳號。交易 sourceId 由帳戶、交易日、帶正負號的金額、交易後餘額與支票號碼雜湊產生，另加同組流水號；不依賴備註或時間精度，重複同步不新增同筆交易。每日餘額快照以臺灣日期識別。
+- `sinopac` 已加入直接存款來源，透過既有銀行代碼 `807`、末四碼與幣別連結集保交割帳戶，避免重複計入資產；存款交易不參與信用卡授權配對。
+
+帳戶總覽、臺外幣三個月交易與明確無交易回應已用登入後的唯讀查詢確認，並以新 parser 實際取得帳戶、快照與交易；區間分割、無卡保留存款與重複寫入使用合成 fixture／本機測試驗證，尚未驗證部署後的完整同步。
 
 #### 信用卡帳單與餘額
 
 永豐信用卡使用 SinoCard `accounting/accountinginfo` 的 `BillAmounts` 取得各幣別本期帳務，
 以 `CURRBAL` 保存應繳總額、`DUEAMT` 保存最低應繳、`TotalPaymentAmt` 保存本期累計已繳款。
+銀行的 `TotalPaymentAmt="-"` 是本期尚無已入帳繳款的明確標記，解析為已繳款 0；
+已於官方帳務頁與臺幣／日幣回應的 `PaymentRecords=[]` 核對。最近繳款 `LastPaymentAmt`
+及上一期繳款 `PREVPAYAMT` 不替代本期累計已繳款。
 應繳總額保留原始正負號，允許退款或溢繳形成的負帳單。餘額快照使用同幣別已繳款減去應繳總額，
-負值為欠款，正值為溢繳餘額；餘額非負時標記無需繳款。缺少已繳款金額時不建立該筆帳務快照，
+負值為欠款，正值為溢繳餘額；餘額非負時標記無需繳款。已繳款為 0 且應繳總額為正時，帳單狀態為待繳。缺少已繳款欄位或無法解析時不建立該筆帳務快照，
 台幣總覽的負應繳金額仍保留為正餘額，不取絕對值或歸零。
 結帳日與繳款期限分別取自 `BaseData.STMTDATE`、`BaseData.DUEDATE`；保留既有台幣歷史帳單查詢。
 外幣未列於本期 `BillAmounts` 時，使用銀行本次 `OutstandingDetail.SubTotal` 小計作為未出帳負債快照，
 不建立帳單、不填入繳款期限；不得累加本機歷史交易替代本次小計。資產頁對未知信用卡餘額顯示
-「金額尚未取得」，相關負債合計顯示「資料不完整」。
+「剩餘應繳金額未取得」，相關負債合計顯示「資料不完整」。繳款狀態以銀行已入帳資料為準，
+官方頁面說明付款後約需 1 至 3 個營業日入帳。
 
 #### 授權與明細配對
 
@@ -369,6 +381,14 @@ Migration `0043_merge_legacy_invoice_duplicates.sql` 以相同發票號碼整併
 入口失敗以 `card-entry-*` log 區分，錯誤內容須遮罩。
 
 信用卡階段的原生 alert、功能頁明確無卡提示，或預期信用卡 API 的 `HEAD.RETURNDESC` 明確回覆無卡時，保留存款與交易，以 `hasCreditCard: false` 略過信用卡流程。只有入口缺失、頁面未就緒或 API 未回應仍失敗；`未申請網服會員` 不代表無卡。HTTP 非成功回應不接受為無卡資料。
+
+真實無卡帳號點擊信用卡功能後，銀行不顯示無卡文案，而是經 `/cmsweb/conn/netbanktrust` → `/cmsweb/Detail/BillingQuery` 轉到 `/cmsweb/Home/Logout`（「您已登出信用卡會員服務系統」），之後不會有任何信用卡 API 回應。信用卡階段尚未取得任何信用卡回應時被導到此登出頁，視為無卡並記錄 `card-member-logout`；已取得任一信用卡回應後才出現登出頁時不視為無卡，仍依未回應規則失敗，避免丟棄已取得的帳務。
+
+信用卡會員系統登出後，網銀 session 已無法續用，但銀行仍保留約十分鐘的單一登入鎖，期間重新登入會收到 `MULTI_SESSION_LOGIN`。此情況在擷取結束時呼叫網銀頁框自己的 `logout()`（送出至 `/NetBank/logout.html`）釋放登入並記錄 `netbank-logout`；有卡帳號維持既有的 session 續用，不主動登出。
+
+交易明細頁的說明文字（如「帳戶交易明細查詢提供交易時間資訊」）可能比「帳號 …」先出現，解析頁面帳號時逐一檢查每個帳號／帳戶標籤，取第一個帶帳號數字的值；多個存款帳戶時才能正確對應明細。
+
+交易明細查詢頁一次只查下拉選單中的一個帳號。同步時依序查詢選單中每個非 placeholder 帳號（上限十個），每個帳號各送一次查詢並記錄 `0101-account-complete`，`transactionHistoryHtml` 為各帳號頁面的陣列。前一個帳號的 CDP／HTTP／Fetch 事件可能在下一個帳號開始查詢後才抵達，因此每個帳號使用新的擷取狀態，並在銀行送出請求時把該請求綁定到當時的擷取狀態（CDP 以 request id，Puppeteer page response 以 request 物件）；之後同一請求的回應、完成與失敗事件都寫回同一份狀態，不會被下一個帳號誤用。
 
 第一銀行同一帳號同時只能有一個操作中的網路銀行登入。若頁面顯示「已登入導致無法操作」等占用訊息，與上述 `MULTI_SESSION_LOGIN` 回覆不同，同步會先嘗試一次確認／接管；仍無法進入時標記 `needs_user_action`，不得再當成圖形驗證碼失敗而重試 OCR。排程與手動都不強制登出其他裝置上的工作階段。
 
